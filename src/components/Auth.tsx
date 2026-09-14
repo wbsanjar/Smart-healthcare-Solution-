@@ -5,6 +5,13 @@ import { supabase } from '../config/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
 
+const demoAccounts = [
+  { id: 'patient', label: 'Patient', email: 'patient@demo.com', password: 'patient123' },
+  { id: 'doctor', label: 'Doctor', email: 'doctor@demo.com', password: 'doctor123' },
+  { id: 'ambulance_driver', label: 'Ambulance Driver', email: 'driver@demo.com', password: 'driver123' },
+  { id: 'admin', label: 'Hospital Admin', email: 'admin@demo.com', password: 'admin123' },
+];
+
 const roleConfig: Record<string, {
   label: string;
   icon: typeof Heart;
@@ -95,29 +102,12 @@ export function AuthPage() {
     );
   }
 
-  const handleGoogleSignIn = async () => {
-    try {
-      setError('');
-      setLoading(true);
-      sessionStorage.setItem('pendingRole', role);
-      const { error: oauthError } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: {
-          redirectTo: window.location.origin + '/login/' + role,
-        },
-      });
-      if (oauthError) {
-        await demoSignIn(role);
-        sessionStorage.removeItem('pendingRole');
-        navigate(config.dashboard, { replace: true });
-      }
-    } catch (err) {
-      await demoSignIn(role);
-      sessionStorage.removeItem('pendingRole');
-      navigate(config.dashboard, { replace: true });
-    } finally {
-      setLoading(false);
-    }
+  const loginWithDemo = async (demoId: string) => {
+    setError('');
+    setLoading(true);
+    await demoSignIn(demoId);
+    navigate(roleConfig[demoId]?.dashboard || '/', { replace: true });
+    setLoading(false);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -126,6 +116,17 @@ export function AuthPage() {
     setLoading(true);
 
     try {
+      const demo = demoAccounts.find((a) => a.email.toLowerCase() === email.toLowerCase().trim());
+      if (demo) {
+        if (demo.password === password) {
+          await demoSignIn(demo.id);
+          navigate(config.dashboard, { replace: true });
+          return;
+        }
+        setError(`Wrong password. Use "${demo.password}" for the ${demo.label} account.`);
+        return;
+      }
+
       if (isSignUp) {
         const { error: authError } = await signUp(email, password, fullName);
         if (authError) {
@@ -351,23 +352,41 @@ export function AuthPage() {
                   <div className="w-full border-t border-night-200" />
                 </div>
                 <div className="relative flex justify-center text-xs">
-                  <span className="bg-white px-2 text-night-400">or</span>
+                  <span className="bg-white px-2 text-night-400">Quick Demo Login</span>
                 </div>
               </div>
 
-              <button
-                type="button"
-                onClick={handleGoogleSignIn}
-                className="w-full flex items-center justify-center gap-3 px-4 py-2.5 border border-night-200 rounded-lg text-night-700 font-medium hover:bg-night-50 transition"
-              >
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                  <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/>
-                  <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
-                  <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
-                  <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
-                </svg>
-                Sign in with Google
-              </button>
+              <div className="space-y-2">
+                {demoAccounts.map((account) => (
+                  <button
+                    key={account.id}
+                    type="button"
+                    onClick={() => loginWithDemo(account.id)}
+                    disabled={loading}
+                    className="w-full flex items-center justify-between px-4 py-2.5 border border-night-200 rounded-lg hover:bg-night-50 transition disabled:opacity-50 group"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs text-white ${
+                        account.id === 'patient' ? 'bg-brand-500'
+                        : account.id === 'doctor' ? 'bg-purple-600'
+                        : account.id === 'ambulance_driver' ? 'bg-emerald-600'
+                        : 'bg-red-600'
+                      }`}>
+                        {account.label.split(' ').map(w => w[0]).join('').slice(0, 2)}
+                      </div>
+                      <div className="text-left">
+                        <p className="text-sm font-medium text-night-700">{account.label}</p>
+                        <p className="text-xs text-night-400 font-mono">{account.email} / {account.password}</p>
+                      </div>
+                    </div>
+                    <span className="text-xs text-brand-600 opacity-0 group-hover:opacity-100 transition font-medium">Login →</span>
+                  </button>
+                ))}
+              </div>
+
+              <p className="text-xs text-center text-night-400">
+                Click an account to sign in instantly with pre-filled credentials.
+              </p>
 
               <div className="text-center">
                 <button

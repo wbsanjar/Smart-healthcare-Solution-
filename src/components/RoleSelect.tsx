@@ -110,7 +110,7 @@ export function RoleSelect() {
                 </div>
 
                 <div className={`flex items-center gap-1 text-sm font-medium ${role.color} opacity-0 group-hover:opacity-100 transition-opacity`}>
-                  Sign in with Google <ArrowRight className="w-4 h-4" />
+                  Continue with Email <ArrowRight className="w-4 h-4" />
                 </div>
               </button>
             );
