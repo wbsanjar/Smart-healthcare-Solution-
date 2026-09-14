@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   User,
   Phone,
@@ -11,10 +11,11 @@ import {
   Save,
   Loader2,
   CheckCircle2,
+  Camera,
+  X,
 } from 'lucide-react';
 import { supabase } from '../config/supabase';
 import { useAuth } from '../contexts/AuthContext';
-import { ProfileIllustration } from './Illustrations';
 
 interface Profile {
   id: string;
@@ -33,12 +34,14 @@ interface Profile {
   current_medications: string[];
   location_lat: number;
   location_lng: number;
+  avatar_url: string | null;
+  updated_at: string;
 }
 
 const bloodTypes = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-', 'Unknown'];
 
 export function Profile() {
-  const { user } = useAuth();
+  const { userId, isLoaded: authLoaded, user } = useAuth();
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -46,26 +49,31 @@ export function Profile() {
   const [newCondition, setNewCondition] = useState('');
   const [newAllergy, setNewAllergy] = useState('');
   const [newMedication, setNewMedication] = useState('');
+  const [avatarUploading, setAvatarUploading] = useState(false);
+  const [error, setError] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    fetchProfile();
-  }, [user]);
+    if (authLoaded) fetchProfile();
+  }, [userId, authLoaded]);
 
   const fetchProfile = async () => {
-    if (!user) return;
+    if (!userId) return;
 
     try {
       const { data, error } = await supabase
         .from('profiles')
         .select('*')
-        .eq('id', user.id)
+        .eq('id', userId)
         .maybeSingle();
+
+      if (error) throw error;
 
       if (data) {
         setProfile(data);
       } else {
         const newProfile: Partial<Profile> = {
-          id: user.id,
+          id: userId,
           full_name: '',
           phone: '',
           blood_type: 'Unknown',
@@ -77,39 +85,135 @@ export function Profile() {
           current_medications: [],
           location_lat: 0,
           location_lng: 0,
+          avatar_url: null,
         };
-        await supabase.from('profiles').insert(newProfile);
+        const { error: insertError } = await supabase.from('profiles').insert(newProfile);
+        if (insertError) throw insertError;
         setProfile(newProfile as Profile);
       }
     } catch (error) {
       console.error('Error fetching profile:', error);
+      setError('Could not load profile. Check console for details.');
     } finally {
       setLoading(false);
     }
   };
 
   const handleSave = async () => {
-    if (!profile || !user) return;
+    if (!profile || !userId) return;
 
     setSaving(true);
     setSaved(false);
+    setError('');
 
     try {
       const { error } = await supabase
         .from('profiles')
         .update({
-          ...profile,
+          full_name: profile.full_name,
+          phone: profile.phone,
+          blood_type: profile.blood_type,
+          date_of_birth: profile.date_of_birth,
+          address: profile.address,
+          emergency_contact: profile.emergency_contact,
+          medical_conditions: profile.medical_conditions,
+          allergies: profile.allergies,
+          current_medications: profile.current_medications,
+          avatar_url: profile.avatar_url,
           updated_at: new Date().toISOString(),
         })
-        .eq('id', user.id);
+        .eq('id', userId);
 
       if (error) throw error;
+
+      const { data: verify } = await supabase
+        .from('profiles')
+        .select('updated_at')
+        .eq('id', userId)
+        .maybeSingle();
+
+      if (!verify) {
+        throw new Error(
+          'Profile was not saved. This is likely because Supabase RLS is blocking the update. ' +
+          'Run the RLS fix migration or set up a Clerk Supabase JWT template.'
+        );
+      }
+
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
-    } catch (error) {
-      console.error('Error saving profile:', error);
+    } catch (err) {
+      console.error('Error saving profile:', err);
+      setError(err instanceof Error ? err.message : 'Failed to save profile');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !userId) return;
+
+    const MAX_SIZE = 2 * 1024 * 1024;
+    if (file.size > MAX_SIZE) {
+      setError('Image must be less than 2MB');
+      return;
+    }
+
+    const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+    if (!allowed.includes(file.type)) {
+      setError('Only JPG, PNG, WebP, and GIF images are allowed');
+      return;
+    }
+
+    setAvatarUploading(true);
+    setError('');
+
+    try {
+      const ext = file.name.split('.').pop() || 'jpg';
+      const filePath = `${userId}/avatar.${ext}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from('avatars')
+        .upload(filePath, file, { upsert: true });
+
+      if (uploadError) throw uploadError;
+
+      const { data: urlData } = supabase.storage
+        .from('avatars')
+        .getPublicUrl(filePath);
+
+      setProfile((prev) =>
+        prev ? { ...prev, avatar_url: urlData.publicUrl } : null
+      );
+    } catch (err) {
+      console.error('Error uploading avatar:', err);
+      setError(err instanceof Error ? err.message : 'Failed to upload image');
+    } finally {
+      setAvatarUploading(false);
+    }
+  };
+
+  const removeAvatar = async () => {
+    if (!profile?.avatar_url || !userId) return;
+
+    try {
+      const { data: files } = await supabase.storage
+        .from('avatars')
+        .list(userId);
+
+      const paths = (files || [])
+        .filter((f) => f.name.startsWith('avatar'))
+        .map((f) => `${userId}/${f.name}`);
+
+      if (paths.length > 0) {
+        await supabase.storage.from('avatars').remove(paths);
+      }
+
+      setProfile((prev) =>
+        prev ? { ...prev, avatar_url: null } : null
+      );
+    } catch (err) {
+      console.error('Error removing avatar:', err);
     }
   };
 
@@ -140,7 +244,7 @@ export function Profile() {
     setNewCondition('');
   };
 
-  const removeAllergy = () => {
+  const addAllergy = () => {
     if (!newAllergy.trim() || !profile) return;
     setProfile((prev) =>
       prev
@@ -202,14 +306,14 @@ export function Profile() {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
-        <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+        <Loader2 className="w-8 h-8 animate-spin text-brand-600" />
       </div>
     );
   }
 
   if (!profile) {
     return (
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center">
+      <div className="animate-fade-in-up bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center">
         <User className="w-12 h-12 text-gray-300 mx-auto mb-3" />
         <p className="text-gray-600">Unable to load profile</p>
       </div>
@@ -218,32 +322,69 @@ export function Profile() {
 
   return (
     <div className="space-y-6 max-w-4xl mx-auto">
-      <div className="bg-gradient-to-br from-blue-600 via-blue-700 to-emerald-700 rounded-xl p-6 text-white relative overflow-hidden">
+      <div className="animate-slide-up bg-gradient-to-br from-brand-600 to-brand-700 rounded-xl p-6 text-white relative overflow-hidden">
         <div className="absolute inset-0 opacity-10">
-          <div className="absolute -top-10 -right-10 w-40 h-40 border border-white rounded-full" />
-          <div className="absolute -bottom-10 -left-10 w-32 h-32 border border-white rounded-full" />
+          <div className="absolute -top-10 -right-10 w-40 h-40 border border-white rounded-full animate-float" />
+          <div className="absolute -bottom-10 -left-10 w-32 h-32 border border-white rounded-full animate-float-slow" />
         </div>
-        <div className="relative z-10 flex items-center justify-between">
-          <div>
-            <div className="flex items-center gap-3 mb-4">
-              <div className="p-2 bg-white/20 rounded-lg">
-                <User className="w-6 h-6" />
+        <div className="relative z-10">
+          <div className="flex items-start gap-5">
+            <div className="relative group flex-shrink-0">
+              <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-full overflow-hidden border-2 border-white/30 bg-white/10">
+                {profile.avatar_url ? (
+                  <img src={profile.avatar_url} alt="Profile" className="w-full h-full object-cover" />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center">
+                    <User className="w-8 h-8 sm:w-10 sm:h-10 text-white/60" />
+                  </div>
+                )}
               </div>
-              <div>
-                <h2 className="text-xl font-bold">Your Medical Profile</h2>
-                <p className="text-blue-100">
-                  Keep your medical information up to date for faster emergency response
-                </p>
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={avatarUploading}
+                className="absolute -bottom-1 -right-1 p-1.5 bg-white rounded-full shadow-md text-brand-600 hover:bg-brand-50 transition disabled:opacity-50"
+              >
+                {avatarUploading ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Camera className="w-4 h-4" />
+                )}
+              </button>
+              {profile.avatar_url && (
+                <button
+                  type="button"
+                  onClick={removeAvatar}
+                  className="absolute -top-1 -right-1 p-1 bg-red-500 text-white rounded-full shadow-md hover:bg-red-600 transition"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              )}
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp,image/gif"
+                onChange={handleAvatarUpload}
+                className="hidden"
+              />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-3 mb-2">
+                <div className="p-2 bg-white/20 rounded-lg flex-shrink-0">
+                  <User className="w-5 h-5" />
+                </div>
+                <div>
+                  <h2 className="text-xl font-bold">Your Medical Profile</h2>
+                  <p className="text-brand-100 text-sm">
+                    Keep your medical information up to date for faster emergency response
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 text-sm text-brand-100">
+                <Mail className="w-4 h-4 flex-shrink-0" />
+                <span className="truncate">{user?.primaryEmailAddress?.emailAddress}</span>
               </div>
             </div>
-
-            <div className="flex items-center gap-2 text-sm text-blue-100">
-              <Mail className="w-4 h-4" />
-              <span>{user?.email}</span>
-            </div>
-          </div>
-          <div className="hidden sm:block w-28 h-28">
-            <ProfileIllustration className="w-full h-full" />
           </div>
         </div>
       </div>
@@ -255,7 +396,7 @@ export function Profile() {
         }}
         className="space-y-6"
       >
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+        <div className="animate-fade-in-up bg-white rounded-xl shadow-sm border border-gray-200 p-6">
           <h3 className="text-lg font-semibold text-gray-900 mb-4">Personal Information</h3>
           <div className="grid md:grid-cols-2 gap-4">
             <div>
@@ -266,7 +407,7 @@ export function Profile() {
                   type="text"
                   value={profile.full_name}
                   onChange={(e) => setProfile({ ...profile, full_name: e.target.value })}
-                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-transparent"
                   placeholder="John Doe"
                 />
               </div>
@@ -280,7 +421,7 @@ export function Profile() {
                   type="tel"
                   value={profile.phone}
                   onChange={(e) => setProfile({ ...profile, phone: e.target.value })}
-                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-transparent"
                   placeholder="(555) 123-4567"
                 />
               </div>
@@ -294,7 +435,7 @@ export function Profile() {
                   type="date"
                   value={profile.date_of_birth || ''}
                   onChange={(e) => setProfile({ ...profile, date_of_birth: e.target.value })}
-                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-transparent"
                 />
               </div>
             </div>
@@ -306,7 +447,7 @@ export function Profile() {
                 <select
                   value={profile.blood_type}
                   onChange={(e) => setProfile({ ...profile, blood_type: e.target.value })}
-                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent appearance-none"
+                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-transparent appearance-none"
                 >
                   {bloodTypes.map((type) => (
                     <option key={type} value={type}>
@@ -325,7 +466,7 @@ export function Profile() {
                   type="text"
                   value={profile.address}
                   onChange={(e) => setProfile({ ...profile, address: e.target.value })}
-                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-transparent"
                   placeholder="123 Main St, City, State"
                 />
               </div>
@@ -333,7 +474,7 @@ export function Profile() {
           </div>
         </div>
 
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+        <div className="animate-fade-in-up-1 bg-white rounded-xl shadow-sm border border-gray-200 p-6">
           <h3 className="text-lg font-semibold text-gray-900 mb-4">Emergency Contact</h3>
           <div className="grid md:grid-cols-3 gap-4">
             <div>
@@ -342,7 +483,7 @@ export function Profile() {
                 type="text"
                 value={profile.emergency_contact.name || ''}
                 onChange={(e) => updateEmergencyContact('name', e.target.value)}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-transparent"
                 placeholder="Emergency contact name"
               />
             </div>
@@ -353,7 +494,7 @@ export function Profile() {
                 type="text"
                 value={profile.emergency_contact.relationship || ''}
                 onChange={(e) => updateEmergencyContact('relationship', e.target.value)}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-transparent"
                 placeholder="Spouse, Parent, etc."
               />
             </div>
@@ -364,14 +505,14 @@ export function Profile() {
                 type="tel"
                 value={profile.emergency_contact.phone || ''}
                 onChange={(e) => updateEmergencyContact('phone', e.target.value)}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-transparent"
                 placeholder="(555) 987-6543"
               />
             </div>
           </div>
         </div>
 
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+        <div className="animate-fade-in-up-2 bg-white rounded-xl shadow-sm border border-gray-200 p-6">
           <div className="flex items-center gap-2 mb-4">
             <AlertTriangle className="w-5 h-5 text-orange-600" />
             <h3 className="text-lg font-semibold text-gray-900">Medical Conditions</h3>
@@ -399,7 +540,7 @@ export function Profile() {
               value={newCondition}
               onChange={(e) => setNewCondition(e.target.value)}
               onKeyPress={(e) => e.key === 'Enter' && (e.preventDefault(), addCondition())}
-              className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-transparent"
               placeholder="Add medical condition"
             />
             <button
@@ -412,7 +553,7 @@ export function Profile() {
           </div>
         </div>
 
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+        <div className="animate-fade-in-up-3 bg-white rounded-xl shadow-sm border border-gray-200 p-6">
           <div className="flex items-center gap-2 mb-4">
             <AlertTriangle className="w-5 h-5 text-red-600" />
             <h3 className="text-lg font-semibold text-gray-900">Allergies</h3>
@@ -439,13 +580,13 @@ export function Profile() {
               type="text"
               value={newAllergy}
               onChange={(e) => setNewAllergy(e.target.value)}
-              onKeyPress={(e) => e.key === 'Enter' && (e.preventDefault(), removeAllergy())}
-              className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              onKeyPress={(e) => e.key === 'Enter' && (e.preventDefault(), addAllergy())}
+              className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-transparent"
               placeholder="Add allergy"
             />
             <button
               type="button"
-              onClick={removeAllergy}
+              onClick={addAllergy}
               className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition"
             >
               Add
@@ -453,22 +594,22 @@ export function Profile() {
           </div>
         </div>
 
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+        <div className="animate-fade-in-up-4 bg-white rounded-xl shadow-sm border border-gray-200 p-6">
           <div className="flex items-center gap-2 mb-4">
-            <Pill className="w-5 h-5 text-blue-600" />
+            <Pill className="w-5 h-5 text-brand-600" />
             <h3 className="text-lg font-semibold text-gray-900">Current Medications</h3>
           </div>
           <div className="flex flex-wrap gap-2 mb-3">
             {profile.current_medications.map((medication) => (
               <span
                 key={medication}
-                className="inline-flex items-center gap-1 px-3 py-1.5 bg-blue-50 text-blue-700 border border-blue-200 rounded-lg"
+                className="inline-flex items-center gap-1 px-3 py-1.5 bg-brand-50 text-brand-700 border border-brand-200 rounded-lg"
               >
                 {medication}
                 <button
                   type="button"
                   onClick={() => removeMedication(medication)}
-                  className="text-blue-500 hover:text-blue-700"
+                  className="text-brand-500 hover:text-brand-700"
                 >
                   ×
                 </button>
@@ -481,24 +622,30 @@ export function Profile() {
               value={newMedication}
               onChange={(e) => setNewMedication(e.target.value)}
               onKeyPress={(e) => e.key === 'Enter' && (e.preventDefault(), addMedication())}
-              className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-transparent"
               placeholder="Add medication"
             />
             <button
               type="button"
               onClick={addMedication}
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
+              className="px-4 py-2 bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition"
             >
               Add
             </button>
           </div>
         </div>
 
-        <div className="flex items-center gap-4">
+        {error && (
+          <div className="animate-fade-in bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 text-sm">
+            {error}
+          </div>
+        )}
+
+        <div className="flex items-center gap-4 animate-slide-up">
           <button
             type="submit"
             disabled={saving}
-            className="flex-1 flex items-center justify-center gap-2 px-6 py-3 bg-gradient-to-r from-blue-600 to-emerald-600 text-white rounded-lg font-medium hover:opacity-90 transition disabled:opacity-50"
+            className="flex-1 flex items-center justify-center gap-2 px-6 py-3 bg-brand-500 text-white rounded-lg font-medium hover:opacity-90 transition disabled:opacity-50"
           >
             {saving ? (
               <>
@@ -514,7 +661,7 @@ export function Profile() {
           </button>
 
           {saved && (
-            <div className="flex items-center gap-2 text-green-600">
+            <div className="flex items-center gap-2 text-green-600 animate-scale-in">
               <CheckCircle2 className="w-5 h-5" />
               <span className="font-medium">Saved!</span>
             </div>
@@ -522,12 +669,12 @@ export function Profile() {
         </div>
       </form>
 
-      <div className="bg-blue-50 border border-blue-200 rounded-xl p-6">
+      <div className="animate-fade-in-up-5 bg-brand-50 border border-brand-200 rounded-xl p-6">
         <div className="flex items-start gap-3">
-          <Heart className="w-6 h-6 text-blue-600 flex-shrink-0 mt-0.5" />
+          <Heart className="w-6 h-6 text-brand-600 flex-shrink-0 mt-0.5 animate-heartbeat" />
           <div>
-            <h3 className="font-semibold text-blue-900 mb-2">Why This Information Matters</h3>
-            <ul className="text-sm text-blue-800 space-y-1">
+            <h3 className="font-semibold text-brand-900 mb-2">Why This Information Matters</h3>
+            <ul className="text-sm text-brand-800 space-y-1">
               <li>
                 <strong>Emergency Response:</strong> Medical teams are instantly notified of your
                 conditions, allergies, and medications

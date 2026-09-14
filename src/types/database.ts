@@ -23,6 +23,7 @@ export interface Database {
           current_medications: string[]
           location_lat: number
           location_lng: number
+          avatar_url: string | null
           created_at: string
           updated_at: string
         }
@@ -39,6 +40,7 @@ export interface Database {
           current_medications?: string[]
           location_lat?: number
           location_lng?: number
+          avatar_url?: string | null
           created_at?: string
           updated_at?: string
         }
@@ -55,6 +57,7 @@ export interface Database {
           current_medications?: string[]
           location_lat?: number
           location_lng?: number
+          avatar_url?: string | null
           created_at?: string
           updated_at?: string
         }

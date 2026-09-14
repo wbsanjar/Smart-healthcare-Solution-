@@ -1,9 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   Truck,
   Phone,
   Clock,
-  Navigation,
   Activity,
   CheckCircle2,
   AlertCircle,
@@ -11,9 +10,128 @@ import {
   RefreshCw,
   User,
 } from 'lucide-react';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 import { supabase } from '../config/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { AmbulanceIllustration } from './Illustrations';
+
+const defaultIcon = L.icon({
+  iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+  iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
+  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+  popupAnchor: [1, -34],
+  shadowSize: [41, 41],
+});
+
+L.Marker.prototype.options.icon = defaultIcon;
+
+function AmbulanceMap({ ambulances, userLocation }: {
+  ambulances: Ambulance[];
+  userLocation: { lat: number; lng: number } | null;
+}) {
+  const mapRef = useRef<HTMLDivElement>(null);
+  const mapInstance = useRef<L.Map | null>(null);
+
+  useEffect(() => {
+    if (!mapRef.current || mapInstance.current) return;
+
+    const map = L.map(mapRef.current, {
+      center: [23.2599, 77.4126],
+      zoom: 13,
+      zoomControl: true,
+    });
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap contributors',
+      maxZoom: 19,
+    }).addTo(map);
+
+    mapInstance.current = map;
+
+    return () => {
+      map.remove();
+      mapInstance.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const map = mapInstance.current;
+    if (!map) return;
+
+    map.eachLayer((layer) => {
+      if (layer instanceof L.Marker || layer instanceof L.CircleMarker) {
+        map.removeLayer(layer);
+      }
+    });
+
+    const greenIcon = L.icon({
+      iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-green.png',
+      iconRetinaUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png',
+      shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+      iconSize: [25, 41],
+      iconAnchor: [12, 41],
+      popupAnchor: [1, -34],
+      shadowSize: [41, 41],
+    });
+
+    const redIcon = L.icon({
+      iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
+      iconRetinaUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
+      shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+      iconSize: [25, 41],
+      iconAnchor: [12, 41],
+      popupAnchor: [1, -34],
+      shadowSize: [41, 41],
+    });
+
+    const greyIcon = L.icon({
+      iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-grey.png',
+      iconRetinaUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-grey.png',
+      shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+      iconSize: [25, 41],
+      iconAnchor: [12, 41],
+      popupAnchor: [1, -34],
+      shadowSize: [41, 41],
+    });
+
+    ambulances.forEach((a) => {
+      let icon = greyIcon;
+      let statusLabel = a.status;
+      if (a.status === 'available') { icon = greenIcon; statusLabel = 'Available'; }
+      else if (a.status === 'busy') { icon = redIcon; statusLabel = 'Responding'; }
+
+      L.marker([a.location_lat, a.location_lng], { icon })
+        .addTo(map)
+        .bindPopup(`
+          <b>${a.vehicle_number}</b><br/>
+          Driver: ${a.driver_name}<br/>
+          Status: <span style="color:${a.status === 'available' ? 'green' : a.status === 'busy' ? 'red' : 'grey'}">${statusLabel}</span><br/>
+          📞 ${a.driver_phone}
+        `);
+    });
+
+    if (userLocation) {
+      L.circleMarker([userLocation.lat, userLocation.lng], {
+        radius: 10,
+        fillColor: '#3b82f6',
+        color: '#1d4ed8',
+        weight: 3,
+        opacity: 1,
+        fillOpacity: 0.6,
+      })
+        .addTo(map)
+        .bindPopup('<b>Your Location</b>')
+        .openPopup();
+
+      map.setView([userLocation.lat, userLocation.lng], 13);
+    }
+  }, [ambulances, userLocation]);
+
+  return <div ref={mapRef} className="w-full h-80 rounded-lg" />;
+}
 
 interface Ambulance {
   id: string;
@@ -50,7 +168,7 @@ interface ActiveRequest {
 }
 
 export function AmbulanceTracker() {
-  const { user } = useAuth();
+  const { userId } = useAuth();
   const [ambulances, setAmbulances] = useState<Ambulance[]>([]);
   const [activeRequest, setActiveRequest] = useState<ActiveRequest | null>(null);
   const [loading, setLoading] = useState(true);
@@ -60,8 +178,14 @@ export function AmbulanceTracker() {
   useEffect(() => {
     loadData();
     getCurrentLocation();
-    const interval = setInterval(loadData, 15000);
-    return () => clearInterval(interval);
+
+    const channel = supabase
+      .channel('ambulance-tracker')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'ambulances' }, () => { loadData(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'emergency_requests', filter: userId ? `user_id=eq.${userId}` : undefined }, () => { loadData(); })
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
   }, []);
 
   const getCurrentLocation = () => {
@@ -91,7 +215,7 @@ export function AmbulanceTracker() {
         setAmbulances(ambulanceData);
       }
 
-      if (user) {
+      if (userId) {
         const { data: requestData } = await supabase
           .from('emergency_requests')
           .select(
@@ -101,7 +225,7 @@ export function AmbulanceTracker() {
             hospital:hospitals(name, address, phone)
           `
           )
-          .eq('user_id', user.id)
+          .eq('user_id', userId)
           .in('status', ['pending', 'dispatched', 'en_route'])
           .order('created_at', { ascending: false })
           .limit(1)
@@ -113,66 +237,99 @@ export function AmbulanceTracker() {
       }
 
       if (!ambulanceData || ambulanceData.length === 0) {
-        generateMockAmbulances();
+        setAmbulances(getMockAmbulances());
       }
     } catch (error) {
       console.error('Error loading data:', error);
+      setAmbulances(getMockAmbulances());
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
   };
 
-  const generateMockAmbulances = async () => {
-    const mockAmbulances: Partial<Ambulance>[] = [
-      {
-        vehicle_number: 'AMB-001',
-        driver_name: 'John Smith',
-        driver_phone: '(555) 111-0001',
-        location_lat: 40.7128,
-        location_lng: -74.006,
-        status: 'available',
-      },
-      {
-        vehicle_number: 'AMB-002',
-        driver_name: 'Sarah Johnson',
-        driver_phone: '(555) 111-0002',
-        location_lat: 40.7484,
-        location_lng: -73.9857,
-        status: 'available',
-      },
-      {
-        vehicle_number: 'AMB-003',
-        driver_name: 'Michael Brown',
-        driver_phone: '(555) 111-0003',
-        location_lat: 40.73,
-        location_lng: -73.98,
-        status: 'busy',
-      },
-      {
-        vehicle_number: 'AMB-004',
-        driver_name: 'Emily Davis',
-        driver_phone: '(555) 111-0004',
-        location_lat: 40.76,
-        location_lng: -73.95,
-        status: 'available',
-      },
-      {
-        vehicle_number: 'AMB-005',
-        driver_name: 'David Wilson',
-        driver_phone: '(555) 111-0005',
-        location_lat: 40.758,
-        location_lng: -73.9855,
-        status: 'offline',
-      },
-    ];
-
-    for (const ambulance of mockAmbulances) {
-      await supabase.from('ambulances').insert(ambulance);
-    }
-
-    loadData();
-  };
+  const getMockAmbulances = (): Ambulance[] => [
+    {
+      id: 'amb-bpl-1',
+      vehicle_number: 'MP-04-AB-1001',
+      driver_name: 'Ramesh Gupta',
+      driver_phone: '+91 98765-10001',
+      location_lat: 23.2400,
+      location_lng: 77.4200,
+      status: 'available',
+      hospital_id: null,
+    },
+    {
+      id: 'amb-bpl-2',
+      vehicle_number: 'MP-04-AB-1002',
+      driver_name: 'Suresh Patel',
+      driver_phone: '+91 98765-10002',
+      location_lat: 23.2750,
+      location_lng: 77.4350,
+      status: 'available',
+      hospital_id: null,
+    },
+    {
+      id: 'amb-bpl-3',
+      vehicle_number: 'MP-04-AB-1003',
+      driver_name: 'Vikram Singh',
+      driver_phone: '+91 98765-10003',
+      location_lat: 23.2100,
+      location_lng: 77.4000,
+      status: 'busy',
+      hospital_id: null,
+    },
+    {
+      id: 'amb-bpl-4',
+      vehicle_number: 'MP-04-AB-1004',
+      driver_name: 'Amit Sharma',
+      driver_phone: '+91 98765-10004',
+      location_lat: 23.2500,
+      location_lng: 77.4450,
+      status: 'available',
+      hospital_id: null,
+    },
+    {
+      id: 'amb-bpl-5',
+      vehicle_number: 'MP-04-AB-1005',
+      driver_name: 'Rajesh Verma',
+      driver_phone: '+91 98765-10005',
+      location_lat: 23.2650,
+      location_lng: 77.4050,
+      status: 'available',
+      hospital_id: null,
+    },
+    {
+      id: 'amb-bpl-6',
+      vehicle_number: 'MP-04-AB-1006',
+      driver_name: 'Manoj Tiwari',
+      driver_phone: '+91 98765-10006',
+      location_lat: 23.2250,
+      location_lng: 77.4380,
+      status: 'busy',
+      hospital_id: null,
+    },
+    {
+      id: 'amb-bpl-7',
+      vehicle_number: 'MP-04-AB-1007',
+      driver_name: 'Sanjay Yadav',
+      driver_phone: '+91 98765-10007',
+      location_lat: 23.2350,
+      location_lng: 77.4100,
+      status: 'offline',
+      hospital_id: null,
+    },
+    {
+      id: 'amb-bpl-8',
+      vehicle_number: 'MP-04-AB-1008',
+      driver_name: 'Deepak Chauhan',
+      driver_phone: '+91 98765-10008',
+      location_lat: 23.2580,
+      location_lng: 77.4250,
+      status: 'available',
+      hospital_id: null,
+    },
+  ];
 
   const calculateDistance = (ambulance: Ambulance) => {
     if (!location) return 0;
@@ -206,7 +363,7 @@ export function AmbulanceTracker() {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
-        <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+        <Loader2 className="w-8 h-8 animate-spin text-brand-600" />
       </div>
     );
   }
@@ -214,10 +371,10 @@ export function AmbulanceTracker() {
   return (
     <div className="space-y-6">
       {activeRequest && (
-        <div className="bg-gradient-to-br from-emerald-600 via-emerald-700 to-blue-700 rounded-xl p-6 text-white relative overflow-hidden">
+        <div className="animate-slide-up bg-gradient-to-br from-brand-600 to-brand-700 rounded-xl p-6 text-white relative overflow-hidden">
           <div className="absolute inset-0 opacity-10">
-            <div className="absolute -top-10 -right-10 w-40 h-40 border border-white rounded-full" />
-            <div className="absolute -bottom-10 -left-10 w-32 h-32 border border-white rounded-full" />
+            <div className="absolute -top-10 -right-10 w-40 h-40 border border-white rounded-full animate-float" />
+            <div className="absolute -bottom-10 -left-10 w-32 h-32 border border-white rounded-full animate-float-slow" />
           </div>
           <div className="relative z-10">
             <div className="flex items-center justify-between">
@@ -227,7 +384,7 @@ export function AmbulanceTracker() {
                 </div>
                 <div>
                   <h2 className="text-xl font-bold">Active Request</h2>
-                  <p className="text-emerald-100">Track your emergency response</p>
+                  <p className="text-brand-100">Track your emergency response</p>
                 </div>
               </div>
               <div className="w-16 h-16">
@@ -236,9 +393,9 @@ export function AmbulanceTracker() {
             </div>
 
           <div className="grid md:grid-cols-3 gap-4">
-            <div className="bg-white/10 rounded-lg p-4 backdrop-blur">
+            <div className="bg-white/10 rounded-lg p-4 backdrop-blur animate-scale-in">
               <div className="flex items-center gap-2 mb-2">
-                <AlertCircle className="w-5 h-5" />
+                <AlertCircle className="w-5 h-5 animate-pulse-soft" />
                 <span className="font-semibold">Status</span>
               </div>
               <p className="text-2xl font-bold capitalize">
@@ -247,7 +404,7 @@ export function AmbulanceTracker() {
             </div>
 
             {activeRequest.estimated_arrival && (
-              <div className="bg-white/10 rounded-lg p-4 backdrop-blur">
+              <div className="bg-white/10 rounded-lg p-4 backdrop-blur animate-scale-in-1">
                 <div className="flex items-center gap-2 mb-2">
                   <Clock className="w-5 h-5" />
                   <span className="font-semibold">ETA</span>
@@ -265,7 +422,7 @@ export function AmbulanceTracker() {
             )}
 
             {activeRequest.ambulance && (
-              <div className="bg-white/10 rounded-lg p-4 backdrop-blur">
+              <div className="bg-white/10 rounded-lg p-4 backdrop-blur animate-scale-in-2">
                 <div className="flex items-center gap-2 mb-2">
                   <Truck className="w-5 h-5" />
                   <span className="font-semibold">Vehicle</span>
@@ -277,10 +434,10 @@ export function AmbulanceTracker() {
 
           <div className="grid md:grid-cols-2 gap-4 mt-4">
             {activeRequest.ambulance && (
-              <div className="bg-white/10 rounded-lg p-4 backdrop-blur">
+              <div className="bg-white/10 rounded-lg p-4 backdrop-blur animate-fade-in-up-1">
                 <h4 className="font-semibold mb-2">Driver Information</h4>
                 <p className="font-medium">{activeRequest.ambulance.driver_name}</p>
-                <p className="text-sm text-emerald-100">{activeRequest.ambulance.driver_phone}</p>
+                <p className="text-sm text-brand-100">{activeRequest.ambulance.driver_phone}</p>
                 <a
                   href={`tel:${activeRequest.ambulance.driver_phone}`}
                   className="inline-flex items-center gap-2 mt-2 px-3 py-1.5 bg-white/20 hover:bg-white/30 rounded-lg text-sm font-medium transition"
@@ -292,29 +449,26 @@ export function AmbulanceTracker() {
             )}
 
             {activeRequest.hospital && (
-              <div className="bg-white/10 rounded-lg p-4 backdrop-blur">
+              <div className="bg-white/10 rounded-lg p-4 backdrop-blur animate-fade-in-up-2">
                 <h4 className="font-semibold mb-2">Destination Hospital</h4>
                 <p className="font-medium">{activeRequest.hospital.name}</p>
-                <p className="text-sm text-emerald-100">{activeRequest.hospital.address}</p>
-                <p className="text-sm text-emerald-100">{activeRequest.hospital.phone}</p>
+                <p className="text-sm text-brand-100">{activeRequest.hospital.address}</p>
+                <p className="text-sm text-brand-100">{activeRequest.hospital.phone}</p>
               </div>
             )}
           </div>
 
-          <div className="mt-4 h-32 bg-white/10 rounded-lg flex items-center justify-center">
-            <div className="text-center">
-              <Navigation className="w-8 h-8 mx-auto mb-2" />
-              <p className="text-sm">Live Tracking View</p>
-              <p className="text-xs text-emerald-100 mt-1">
-                From: {activeRequest.pickup_location?.address || 'Your location'}
-              </p>
-            </div>
+          <div className="mt-4 h-48 rounded-lg overflow-hidden">
+            <AmbulanceMap
+              ambulances={activeRequest.ambulance ? [activeRequest.ambulance] : []}
+              userLocation={{ lat: activeRequest.pickup_location?.lat || 23.2599, lng: activeRequest.pickup_location?.lng || 77.4126 }}
+            />
           </div>
           </div>
         </div>
       )}
 
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+      <div className="animate-slide-up-1 bg-white rounded-xl shadow-sm border border-gray-200 p-6">
         <div className="flex items-center justify-between mb-6">
           <div>
             <h3 className="text-lg font-semibold text-gray-900">Ambulance Fleet Status</h3>
@@ -340,10 +494,11 @@ export function AmbulanceTracker() {
               Available ({availableAmbulances.length})
             </h4>
             <div className="space-y-2">
-              {availableAmbulances.map((ambulance) => (
+              {availableAmbulances.map((ambulance, index) => (
                 <div
                   key={ambulance.id}
-                  className="bg-green-50 border border-green-200 rounded-lg p-4"
+                  className="bg-green-50 border border-green-200 rounded-lg p-4 animate-fade-in-up"
+                  style={{ animationDelay: `${index * 0.06}s` }}
                 >
                   <div className="flex items-start justify-between mb-2">
                     <div>
@@ -385,8 +540,8 @@ export function AmbulanceTracker() {
               On Duty ({busyAmbulances.length})
             </h4>
             <div className="space-y-2">
-              {busyAmbulances.map((ambulance) => (
-                <div key={ambulance.id} className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+              {busyAmbulances.map((ambulance, index) => (
+                <div key={ambulance.id} className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 animate-fade-in-up" style={{ animationDelay: `${index * 0.06}s` }}>
                   <div className="mb-2">
                     <p className="font-semibold text-gray-900">{ambulance.vehicle_number}</p>
                     <div className="flex items-center gap-1 text-sm text-gray-600 mt-1">
@@ -414,8 +569,8 @@ export function AmbulanceTracker() {
               Offline ({offlineAmbulances.length})
             </h4>
             <div className="space-y-2">
-              {offlineAmbulances.map((ambulance) => (
-                <div key={ambulance.id} className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+              {offlineAmbulances.map((ambulance, index) => (
+                <div key={ambulance.id} className="bg-gray-50 border border-gray-200 rounded-lg p-4 animate-fade-in-up" style={{ animationDelay: `${index * 0.06}s` }}>
                   <div className="mb-2">
                     <p className="font-semibold text-gray-700">{ambulance.vehicle_number}</p>
                     <div className="flex items-center gap-1 text-sm text-gray-500 mt-1">
@@ -438,12 +593,25 @@ export function AmbulanceTracker() {
         </div>
       </div>
 
-      <div className="bg-blue-50 border border-blue-200 rounded-xl p-6">
+      <div className="animate-slide-up-2 bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-semibold text-gray-900">Live Map</h3>
+          <div className="flex items-center gap-3 text-xs">
+            <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-green-500 inline-block" /> Available</span>
+            <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-red-500 inline-block" /> Busy</span>
+            <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-gray-500 inline-block" /> Offline</span>
+            {location && <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-blue-500 inline-block" /> You</span>}
+          </div>
+        </div>
+        <AmbulanceMap ambulances={ambulances} userLocation={location} />
+      </div>
+
+      <div className="animate-fade-in-up bg-brand-50 border border-brand-200 rounded-xl p-6">
         <div className="flex items-start gap-3">
-          <Truck className="w-6 h-6 text-blue-600 flex-shrink-0 mt-0.5" />
+          <Truck className="w-6 h-6 text-brand-600 flex-shrink-0 mt-0.5 animate-float" />
           <div>
-            <h3 className="font-semibold text-blue-900 mb-2">How Ambulance Tracking Works</h3>
-            <ul className="text-sm text-blue-800 space-y-1">
+            <h3 className="font-semibold text-brand-900 mb-2">How Ambulance Tracking Works</h3>
+            <ul className="text-sm text-brand-800 space-y-1">
               <li>GPS-enabled ambulances update location in real-time</li>
               <li>Nearest available ambulance dispatched to your location</li>
               <li>Live ETA updates sent to your device</li>

@@ -235,7 +235,7 @@ const firstAidResponses: Record<string, string> = {
 };
 
 export function ChatBot() {
-  const { user } = useAuth();
+  const { userId } = useAuth();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -243,22 +243,22 @@ export function ChatBot() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (user) {
+    if (userId) {
       loadOrCreateSession();
     }
-  }, [user]);
+  }, [userId]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
   const loadOrCreateSession = async () => {
-    if (!user) return;
+    if (!userId) return;
 
     const { data: existingSessions } = await supabase
       .from('chat_sessions')
       .select('*')
-      .eq('user_id', user.id)
+      .eq('user_id', userId)
       .eq('status', 'active')
       .order('created_at', { ascending: false })
       .limit(1);
@@ -270,7 +270,7 @@ export function ChatBot() {
     } else {
       const { data: newSession } = await supabase
         .from('chat_sessions')
-        .insert({ user_id: user.id, title: 'Health Consultation' })
+        .insert({ user_id: userId, title: 'Health Consultation' })
         .select()
         .single();
 
@@ -364,7 +364,7 @@ export function ChatBot() {
 
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || !user || !sessionId) return;
+    if (!input.trim() || !userId || !sessionId) return;
 
     const userMessage = input.trim();
     setInput('');
@@ -381,7 +381,7 @@ export function ChatBot() {
 
     await supabase.from('chat_messages').insert({
       session_id: sessionId,
-      user_id: user.id,
+      user_id: userId,
       role: 'user',
       content: userMessage,
     });
@@ -401,7 +401,7 @@ export function ChatBot() {
 
     await supabase.from('chat_messages').insert({
       session_id: sessionId,
-      user_id: user.id,
+      user_id: userId,
       role: 'assistant',
       content: response,
     });
@@ -419,21 +419,22 @@ export function ChatBot() {
 
   return (
     <div className="flex flex-col h-[calc(100vh-12rem)] bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-      <div className="bg-gradient-to-r from-blue-600 via-blue-700 to-emerald-700 px-6 py-4 text-white flex items-center justify-between relative overflow-hidden">
+      <div className="from-brand-600 to-brand-700 px-6 py-4 text-white flex items-center justify-between relative overflow-hidden">
         <div className="absolute inset-0 opacity-10">
-          <div className="absolute -top-6 -right-6 w-24 h-24 border border-white rounded-full" />
-          <div className="absolute -bottom-6 -left-6 w-20 h-20 border border-white rounded-full" />
+          <div className="absolute -top-6 -right-6 w-24 h-24 border border-white rounded-full animate-float" />
+          <div className="absolute -bottom-6 -left-6 w-20 h-20 border border-white rounded-full animate-float-slow" />
+          <div className="absolute top-10 left-20 w-16 h-16 border border-white rounded-full animate-float-delayed" />
         </div>
         <div className="relative z-10 flex items-center gap-3">
-          <div className="p-2 bg-white/20 rounded-lg">
+          <div className="p-2 bg-white/20 rounded-lg animate-scale-in">
             <Bot className="w-5 h-5" />
           </div>
-          <div>
+          <div className="animate-fade-in-up">
             <h2 className="font-semibold">AI Health Assistant</h2>
-            <p className="text-sm text-blue-100">First-aid guidance & symptom analysis</p>
+            <p className="text-sm text-brand-100">First-aid guidance & symptom analysis</p>
           </div>
-          <div className="hidden sm:flex items-center gap-1 ml-4 px-2 py-1 bg-white/10 rounded-full">
-            <Sparkles className="w-3 h-3" />
+          <div className="hidden sm:flex items-center gap-1 ml-4 px-2 py-1 bg-white/10 rounded-full animate-fade-in-up-1">
+            <Sparkles className="w-3 h-3 animate-pulse-soft" />
             <span className="text-xs">Powered by AI</span>
           </div>
         </div>
@@ -455,17 +456,19 @@ export function ChatBot() {
         {messages.map((message) => (
           <div
             key={message.id}
-            className={`flex gap-3 ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
+            className={`flex gap-3 ${
+              message.role === 'user' ? 'justify-end animate-slide-in-right' : 'justify-start animate-slide-in-left'
+            }`}
           >
             {message.role === 'assistant' && (
-              <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-600 to-emerald-600 flex items-center justify-center flex-shrink-0">
+              <div className="w-8 h-8 rounded-full bg-brand-500 flex items-center justify-center flex-shrink-0">
                 <Bot className="w-4 h-4 text-white" />
               </div>
             )}
             <div
               className={`max-w-[80%] rounded-xl px-4 py-3 ${
                 message.role === 'user'
-                  ? 'bg-blue-600 text-white'
+                  ? 'bg-brand-500 text-white'
                   : 'bg-gray-50 border border-gray-200'
               }`}
             >
@@ -511,7 +514,7 @@ export function ChatBot() {
               </div>
               <p
                 className={`text-xs mt-2 ${
-                  message.role === 'user' ? 'text-blue-200' : 'text-gray-400'
+                  message.role === 'user' ? 'text-brand-200' : 'text-gray-400'
                 }`}
               >
                 {new Date(message.timestamp).toLocaleTimeString([], {
@@ -521,7 +524,7 @@ export function ChatBot() {
               </p>
             </div>
             {message.role === 'user' && (
-              <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center flex-shrink-0">
+              <div className="w-8 h-8 rounded-full bg-brand-500 flex items-center justify-center flex-shrink-0">
                 <User className="w-4 h-4 text-white" />
               </div>
             )}
@@ -529,13 +532,13 @@ export function ChatBot() {
         ))}
 
         {loading && (
-          <div className="flex gap-3 justify-start">
-            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-600 to-emerald-600 flex items-center justify-center flex-shrink-0">
+          <div className="flex gap-3 justify-start animate-slide-in-left">
+            <div className="w-8 h-8 rounded-full bg-brand-500 flex items-center justify-center flex-shrink-0">
               <Bot className="w-4 h-4 text-white" />
             </div>
             <div className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-3">
               <div className="flex items-center gap-2">
-                <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
+                <Loader2 className="w-4 h-4 animate-spin text-brand-600" />
                 <span className="text-sm text-gray-600">Analyzing...</span>
               </div>
             </div>
@@ -545,7 +548,7 @@ export function ChatBot() {
         <div ref={messagesEndRef} />
       </div>
 
-      <div className="border-t border-gray-200 p-4 bg-gray-50">
+      <div className="border-t border-gray-200 p-4 bg-gray-50 animate-fade-in-up">
         <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4">
           <div className="flex items-start gap-2">
             <AlertTriangle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
@@ -557,18 +560,18 @@ export function ChatBot() {
           </div>
         </div>
 
-        <form onSubmit={handleSend} className="flex gap-3">
+        <form onSubmit={handleSend} className="flex gap-3 animate-fade-in-up-1">
           <input
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder="Describe your symptoms or emergency..."
-            className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+            className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-transparent transition"
           />
           <button
             type="submit"
             disabled={loading || !input.trim()}
-            className="px-6 py-3 bg-gradient-to-r from-blue-600 to-emerald-600 text-white rounded-lg font-medium hover:opacity-90 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+            className="px-6 py-3 bg-brand-500 text-white rounded-lg font-medium hover:opacity-90 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
           >
             <Send className="w-5 h-5" />
             <span className="hidden sm:inline">Send</span>
